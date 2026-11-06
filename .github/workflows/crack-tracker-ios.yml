@@ -1,0 +1,70 @@
+name: Crack Tracker iOS build
+
+on:
+  push:
+    paths:
+      - "CrackTracker/**"
+      - ".github/workflows/crack-tracker-ios.yml"
+  workflow_dispatch:
+
+jobs:
+  ipa:
+    name: Build unsigned IPA
+    runs-on: macos-15
+    defaults:
+      run:
+        working-directory: CrackTracker
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Build for device (unsigned)
+        run: |
+          set -o pipefail
+          xcodebuild build \
+            -project CrackTracker.xcodeproj \
+            -scheme CrackTracker \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            | tee build.log | grep -E "error:|warning: .*CrackTracker/|BUILD (SUCCEEDED|FAILED)" || true
+          test -d build/Build/Products/Release-iphoneos/CrackTracker.app || { tail -100 build.log; exit 1; }
+
+      - name: Package IPA
+        run: |
+          mkdir -p Payload
+          cp -R build/Build/Products/Release-iphoneos/CrackTracker.app Payload/
+          zip -qry CrackTracker-unsigned.ipa Payload
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: CrackTracker-unsigned-ipa
+          path: CrackTracker/CrackTracker-unsigned.ipa
+          if-no-files-found: error
+
+  tests:
+    name: Unit tests (simulator)
+    runs-on: macos-15
+    defaults:
+      run:
+        working-directory: CrackTracker
+    steps:
+      - uses: actions/checkout@v4
+      - run: brew install xcodegen && xcodegen generate
+      - name: Run tests
+        run: |
+          set -o pipefail
+          SIM=$(xcrun simctl list devices available | grep -m1 -oE "iPhone [0-9]+[^(]*\(([0-9A-F-]{36})\)" | grep -oE "[0-9A-F-]{36}")
+          echo "Simulator: $SIM"
+          xcodebuild test \
+            -project CrackTracker.xcodeproj \
+            -scheme CrackTracker \
+            -destination "id=$SIM" \
+            CODE_SIGNING_ALLOWED=NO \
+            | tee test.log | grep -E "error:|Test Case .*(passed|failed)|TEST (SUCCEEDED|FAILED)|Executed"
